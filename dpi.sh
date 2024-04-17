@@ -1,9 +1,10 @@
 #!/bin/bash
 
 # Включение и выключение byedpi в GNOME
-# Сохранить в /usr/local/bin/dpi
+# Сохранить в /usr/local/bin/dpi или ln -s /home/$USER/git/byedpi/dpi.sh /usr/local/bin/dpi
+
 # Иметь скомпилированный батник по пути /home/"$USER"/git/byedpi/ciadpi
-# Открыть терминал и звпустить dpi. Для завершения нажать ctrl + c
+# Открыть терминал и запустить dpi. Для завершения нажать ctrl + c
 
 echo byedpi запущен
 echo прокси ВКЛ
