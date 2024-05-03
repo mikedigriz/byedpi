@@ -1,3 +1,4 @@
+#pragma once
 #include <stdint.h>
 
 #ifndef __linux__
@@ -35,6 +36,7 @@ enum eid {
     EV_IGNORE,
     EV_TUNNEL,
     EV_PRE_TUNNEL,
+    EV_UDP_TUNNEL,
     EV_DESYNC
 };
 
@@ -42,7 +44,7 @@ enum eid {
 #define FLAG_S5 2
 #define FLAG_CONN 4
 
-#ifndef CONEV_H
+#ifdef EID_STR
 char *eid_name[] = {
     "EV_ACCEPT",
     "EV_REQUEST",
@@ -50,6 +52,7 @@ char *eid_name[] = {
     "EV_IGNORE",
     "EV_TUNNEL",
     "EV_PRE_TUNNEL",
+    "EV_UDP_TUNNEL",
     "EV_DESYNC"
 };
 #endif
@@ -73,6 +76,7 @@ struct eval {
     };
     ssize_t recv_count;
     int attempt;
+    char cache;
     #ifndef NOEPOLL
     uint32_t events;
     #endif

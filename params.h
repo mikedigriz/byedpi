@@ -1,5 +1,5 @@
 #include <stdio.h>
-#include <mpool.h>
+#include "mpool.h"
 
 #ifdef _WIN32
     #include <ws2tcpip.h>
@@ -45,21 +45,37 @@ struct part {
     long pos;
 };
 
+struct packet {
+     ssize_t size;
+     char  *data;
+};
+
 struct desync_params {
     int ttl;
     char *ip_options;
     ssize_t ip_options_len;
     char md5sig;
+    struct packet fake_data;
+    
     int parts_n;
     struct part *parts;
+    
     int mod_http;
     int tlsrec_n;
     struct part *tlsrec;
+    
+    int proto;
     int detect;
+    struct mphdr *hosts;
+    
+    char *file_ptr;
+    ssize_t file_size;
+    
+    char to_ip;
+    struct sockaddr_in6 addr;
 };
 
 struct params {
-    char de_known;
     int dp_count;
     struct desync_params *dp;
     long sfdelay;
@@ -67,24 +83,25 @@ struct params {
     int def_ttl;
     char custom_ttl;
     
+    char late_conn;
     char tfo;
     unsigned int timeout;
     long cache_ttl;
     char ipv6;
     char resolve;
+    char udp;
     int max_open;
     int debug;
     size_t bfsize;
     struct sockaddr_in6 baddr;
+    struct sockaddr_in6 laddr;
     struct mphdr *mempool;
+    
+    char *protect_path;
 };
 
 extern struct params params;
 
-struct packet {
-     ssize_t size;
-     char  *data;
-};
 extern struct packet fake_tls;
 extern struct packet fake_http;
 extern struct packet oob_data;

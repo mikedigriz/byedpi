@@ -6,10 +6,10 @@
 #include <getopt.h>
 #include <limits.h>
 
-#include <params.h>
-#include <proxy.h>
-#include <packets.h>
-#include <error.h>
+#include "params.h"
+#include "proxy.h"
+#include "packets.h"
+#include "error.h"
 
 #ifndef _WIN32
     #include <arpa/inet.h>
@@ -17,17 +17,16 @@
     #include <netdb.h>
     #include <fcntl.h>
     #include <netinet/tcp.h>
+    #include <sys/mman.h>
 #else
     #include <ws2tcpip.h>
+    #include "win_service.h"
     #define close(fd) closesocket(fd)
 #endif
 
-#define VERSION "8.1"
-
-#define MPOOL_INC 16
+#define VERSION "10"
 
 char oob_char[1] = "a";
-
 char ip_option[1] = "\0";
 
 struct packet fake_tls = { 
@@ -48,10 +47,14 @@ struct params params = {
     .cache_ttl = 100800,
     .ipv6 = 1,
     .resolve = 1,
+    .udp = 1,
     .max_open = 512,
     .bfsize = 16384,
     .baddr = {
         .sin6_family = AF_INET6
+    },
+    .laddr = {
+        .sin6_family = AF_INET
     },
     .debug = 0
 };
@@ -62,21 +65,25 @@ const char help_text[] = {
     "    -p, --port <num>          Listening port, default 1080\n"
     "    -c, --max-conn <count>    Connection count limit, default 512\n"
     "    -N, --no-domain           Deny domain resolving\n"
+    "    -U, --no-udp              Deny UDP association\n"
     "    -I  --conn-ip <ip>        Connection binded IP, default ::\n"
     "    -b, --buf-size <size>     Buffer size, default 16384\n"
     "    -x, --debug <level>       Print logs, 0, 1 or 2\n"
     "    -g, --def-ttl <num>       TTL for all outgoing connections\n"
     // desync options
-    "    -K, --desync-known        Desync only HTTP and TLS with SNI\n"
     #ifdef TCP_FASTOPEN_CONNECT
     "    -F, --tfo                 Enable TCP Fast Open\n"
     #endif
-    "    -A, --auto[=t,r,c,s,a]    Try desync params after this option\n"
-    "                              Detect: torst,redirect,cl_err,sid_inv,alert\n"
+    "    -L, --late-conn           Waiting for request before connecting\n"
+    "    -A, --auto[=t,r,c,s,a,n]  Try desync params after this option\n"
+    "                              Detect: torst,redirect,cl_err,sid_inv,alert,none\n"
     "    -u, --cache-ttl <sec>     Lifetime of cached desync params for IP\n"
     #ifdef TIMEOUT_SUPPORT
     "    -T, --timeout <sec>       Timeout waiting for response, after which trigger auto\n"
     #endif
+    "    -K, --proto[=t,h]         Protocol whitelist: tls,http\n"
+    "    -H, --hosts <file|:str>   Hosts whitelist\n"
+    "    -D, --dst <ip[:port]>     Custom destination IP\n"
     "    -s, --split <n[+s]>       Split packet at n\n"
     "                              +s - add SNI offset\n"
     "                              +h - add HTTP Host offset\n"
@@ -89,8 +96,7 @@ const char help_text[] = {
     #ifdef __linux__
     "    -S, --md5sig              Add MD5 Signature option for fake packets\n"
     #endif
-    "    -l, --fake-tls <f|:str>\n"
-    "    -j, --fake-http <f|:str>  Set custom fake packet\n"
+    "    -l, --fake-data <f|:str>  Set custom fake packet\n"
     "    -n, --tls-sni <str>       Change SNI in fake ClientHello\n"
     #endif
     "    -e, --oob-data <f|:str>   Set custom OOB data, filename or :string\n"
@@ -102,6 +108,7 @@ const char help_text[] = {
 const struct option options[] = {
     {"no-domain",     0, 0, 'N'},
     {"no-ipv6",       0, 0, 'X'},
+    {"no-udp",        0, 0, 'U'},
     {"help",          0, 0, 'h'},
     {"version",       0, 0, 'v'},
     {"ip",            1, 0, 'i'},
@@ -111,15 +118,18 @@ const struct option options[] = {
     {"max-conn",      1, 0, 'c'},
     {"debug",         1, 0, 'x'},
     
-    {"desync-known ", 0, 0, 'K'},
     #ifdef TCP_FASTOPEN_CONNECT
     {"tfo ",          0, 0, 'F'},
     #endif
+    {"late-conn",     0, 0, 'L'},
     {"auto",          2, 0, 'A'},
     {"cache-ttl",     1, 0, 'u'},
     #ifdef TIMEOUT_SUPPORT
     {"timeout",       1, 0, 'T'},
     #endif
+    {"proto",         2, 0, 'K'},
+    {"hosts",         1, 0, 'H'},
+    {"dst",           1, 0, 'D'},
     {"split",         1, 0, 's'},
     {"disorder",      1, 0, 'd'},
     {"oob",           1, 0, 'o'},
@@ -130,8 +140,7 @@ const struct option options[] = {
     #ifdef __linux__
     {"md5sig",        0, 0, 'S'},
     #endif
-    {"fake-tls",      1, 0, 'l'},
-    {"fake-http",     1, 0, 'j'},
+    {"fake-data",     1, 0, 'l'},
     {"tls-sni",       1, 0, 'n'},
     #endif
     {"oob-data",      1, 0, 'e'},
@@ -140,6 +149,9 @@ const struct option options[] = {
     {"def-ttl",       1, 0, 'g'},
     {"delay",         1, 0, 'w'}, //
     {"not-wait-send", 0, 0, 'W'}, //
+    #ifdef __linux__
+    {"protect-path",  1, 0, 'P'}, //
+    #endif
     {0}
 };
     
@@ -195,16 +207,27 @@ char *ftob(const char *str, ssize_t *sl)
     long size;
     
     FILE *file = fopen(str, "rb");
-    if (!file)
+    if (!file) {
         return 0;
+    }
     do {
         if (fseek(file, 0, SEEK_END)) {
             break;
         }
         size = ftell(file);
-        if (!size || fseek(file, 0, SEEK_SET)) {
+        if (size <= 0) {
             break;
         }
+        if (fseek(file, 0, SEEK_SET)) {
+            break;
+        }
+        #ifndef _WIN32
+        buffer = mmap(0, size, PROT_READ, MAP_PRIVATE, fileno(file), 0);
+        if (buffer == MAP_FAILED) {
+            buffer = 0;
+            break;
+        }
+        #else
         if (!(buffer = malloc(size))) {
             break;
         }
@@ -212,12 +235,40 @@ char *ftob(const char *str, ssize_t *sl)
             free(buffer);
             buffer = 0;
         }
+        #endif
     } while (0);
     if (buffer) {
         *sl = size;
     }
     fclose(file);
     return buffer;
+}
+
+
+struct mphdr *parse_hosts(char *buffer, size_t size)
+{
+    struct mphdr *hdr = mem_pool(1);
+    if (!hdr) {
+        return 0;
+    }
+    char *end = buffer + size;
+    char *e = buffer, *s = buffer;
+    
+    for (; e <= end; e++) {
+        if (*e != ' ' && *e != '\n' && *e != '\r' && e != end) {
+            continue;
+        }
+        if (s == e) {
+            s++;
+            continue;
+        }
+        if (mem_add(hdr, s, e - s) == 0) {
+            free(hdr);
+            return 0;
+        }
+        s = e + 1;
+    }
+    return hdr;
 }
 
 
@@ -232,12 +283,55 @@ int get_addr(const char *str, struct sockaddr_ina *addr)
     if (getaddrinfo(str, 0, &hints, &res) || !res) {
         return -1;
     }
+    
     if (res->ai_addr->sa_family == AF_INET6)
-        addr->in6 = *(struct sockaddr_in6 *)res->ai_addr;
+        addr->in6.sin6_addr = (
+            (struct sockaddr_in6 *)res->ai_addr)->sin6_addr;
     else
-        addr->in = *(struct sockaddr_in *)res->ai_addr;
+        addr->in.sin_addr = (
+            (struct sockaddr_in *)res->ai_addr)->sin_addr;
     freeaddrinfo(res);
     
+    return 0;
+}
+
+
+int get_addr_with_port(const char *str, struct sockaddr_ina *addr)
+{
+    uint16_t port = 0;
+    const char *s = str, *p = str, *e = 0;
+    char *end = 0;
+
+    if (*str == '[') {
+        e = strchr(str, ']');
+        if (!e) return -1;
+        s++; p = e + 1;
+    }
+    p = strchr(p, ':');
+    if (p) {
+        long val = strtol(p + 1, &end, 0);
+        if (val <= 0 || val > 0xffff || *end)
+            return -1;
+        else
+            port = htons(val);
+        if (!e) e = p;
+    }
+    if (!e) {
+        e = strchr(s, 0);
+    }
+    if ((e - s) < 7) {
+        return -1;
+    }
+    char str_ip[(e - s) + 1];
+    memcpy(str_ip, s, e - s);
+    str_ip[e - s] = 0;
+    
+    if (get_addr(str_ip, addr) < 0) {
+        return -1;
+    }
+    if (port) {
+        addr->in6.sin6_port = port;
+    }
     return 0;
 }
 
@@ -284,18 +378,23 @@ int parse_offset(struct part *part, const char *str)
 
 void *add(void **root, int *n, size_t ss)
 {
-    void *p = realloc(*root, ss * (*n + 1));
+    char *p = realloc(*root, ss * (*n + 1));
     if (!p) {
         uniperror("realloc");
         return 0;
     }
     *root = p;
-    p = ((*root) + ((*n) * ss));
+    p = (p + ((*n) * ss));
     memset(p, 0, ss);
     *n = *n + 1;
     return p;
 }
 
+#ifndef _WIN32
+#define FREE_MAP(p, s) munmap(p, s)
+#else
+#define FREE_MAP(p, s) free(p)
+#endif
 
 void clear_params(void)
 {
@@ -317,20 +416,24 @@ void clear_params(void)
                 free(s.parts);
                 s.parts = 0;
             }
+            if (s.tlsrec != 0) {
+                free(s.tlsrec);
+                s.tlsrec = 0;
+            }
+            if (s.fake_data.data) {
+                FREE_MAP(s.fake_data.data, s.fake_data.size);
+                s.fake_data.data = 0;
+            }
+            if (s.file_ptr) {
+                FREE_MAP(s.file_ptr, s.file_size);
+                s.file_ptr = 0;
+            }
         }
         free(params.dp);
         params.dp = 0;
     }
-    if (fake_tls.data != tls_data) {
-        free(fake_tls.data);
-        fake_tls.data = tls_data;
-    }
-    if (fake_http.data != http_data) {
-        free(fake_http.data);
-        fake_http.data = http_data;
-    }
     if (oob_data.data != oob_char) {
-        free(oob_data.data);
+        FREE_MAP(oob_data.data, oob_data.size);
         oob_data.data = oob_char;
     }
 }
@@ -345,14 +448,10 @@ int main(int argc, char **argv)
         uniperror("WSAStartup");
         return -1;
     }
+    if (register_winsvc(argc, argv)) {
+        return 0;
+    }
     #endif
-    struct sockaddr_ina s = {
-        .in = {
-            .sin_family = AF_INET,
-            .sin_port = htons(1080)
-    }},
-    b = { .in6 = params.baddr };
-    
     int optc = sizeof(options)/sizeof(*options);
     for (int i = 0, e = optc; i < e; i++)
         optc += options[i].has_arg;
@@ -367,6 +466,8 @@ int main(int argc, char **argv)
             opt[o] = ':';
         }
     }
+
+    params.laddr.sin6_port = htons(1080);
     
     int rez;
     int invalid = 0;
@@ -374,14 +475,13 @@ int main(int argc, char **argv)
     long val = 0;
     char *end = 0;
     
-    uint16_t port = htons(1080);
-    
     struct desync_params *dp = add((void *)&params.dp,
         &params.dp_count, sizeof(struct desync_params));
     if (!dp) {
         clear_params();
         return -1;
     }
+    
     while (!invalid && (rez = getopt_long_only(
              argc, argv, opt, options, 0)) != -1) {
         switch (rez) {
@@ -392,6 +492,10 @@ int main(int argc, char **argv)
         case 'X':
             params.ipv6 = 0;
             break;
+        case 'U':
+            params.udp = 0;
+            break;
+            
         case 'h':
             printf(help_text);
             clear_params();
@@ -402,7 +506,8 @@ int main(int argc, char **argv)
             return 0;
         
         case 'i':
-            if (get_addr(optarg, &s) < 0)
+            if (get_addr(optarg, 
+                    (struct sockaddr_ina *)&params.laddr) < 0)
                 invalid = 1;
             break;
             
@@ -411,14 +516,13 @@ int main(int argc, char **argv)
             if (val <= 0 || val > 0xffff || *end)
                 invalid = 1;
             else
-                port = htons(val);
+                params.laddr.sin6_port = htons(val);
             break;
             
         case 'I':
-            if (get_addr(optarg, &b) < 0)
+            if (get_addr(optarg, 
+                    (struct sockaddr_ina *)&params.baddr) < 0)
                 invalid = 1;
-            else
-                params.baddr = b.in6;
             break;
             
         case 'b':
@@ -445,8 +549,8 @@ int main(int argc, char **argv)
             
         // desync options
         
-        case 'K':
-            params.de_known = 1;
+        case 'L':
+            params.late_conn = 1;
             break;
             
         case 'F':
@@ -482,6 +586,8 @@ int main(int argc, char **argv)
                     case 'a': 
                         dp->detect |= DETECT_TLS_ALERT;
                         break;
+                    case 'n': 
+                        break;
                     default:
                         invalid = 1;
                         continue;
@@ -510,6 +616,54 @@ int main(int argc, char **argv)
                 invalid = 1;
             else
                 params.timeout = val;
+            break;
+            
+        case 'K':
+            if (!optarg) {
+                dp->proto |= 0xffffffff;
+                break;
+            }
+            end = optarg;
+            while (end && !invalid) {
+                switch (*end) {
+                    case 't': 
+                        dp->proto |= IS_HTTPS;
+                        break;
+                    case 'h': 
+                        dp->proto |= IS_HTTP;
+                        break;
+                    default:
+                        invalid = 1;
+                        continue;
+                }
+                end = strchr(end, ',');
+                if (end) end++;
+            }
+            break;
+            
+        case 'H':;
+            if (dp->file_ptr) {
+                continue;
+            }
+            dp->file_ptr = ftob(optarg, &dp->file_size);
+            if (!dp->file_ptr) {
+                uniperror("read/parse");
+                invalid = 1;
+                continue;
+            }
+            dp->hosts = parse_hosts(dp->file_ptr, dp->file_size);
+            if (!dp->hosts) {
+                perror("parse_hosts");
+                clear_params();
+                return -1;
+            }
+            break;
+            
+        case 'D':
+            if (get_addr_with_port(optarg, (struct sockaddr_ina *)&dp->addr) < 0)
+                invalid = 1;
+            else
+                dp->to_ip = 1;
             break;
             
         case 's':
@@ -547,6 +701,9 @@ int main(int argc, char **argv)
             break;
             
         case 'k':
+            if (dp->ip_options != ip_option) {
+                continue;
+            }
             if (optarg)
                 dp->ip_options = ftob(optarg, &dp->ip_options_len);
             else {
@@ -573,22 +730,20 @@ int main(int argc, char **argv)
             break;
             
         case 'l':
-            fake_tls.data = ftob(optarg, &fake_tls.size);
-            if (!fake_tls.data) {
-                uniperror("read/parse");
-                invalid = 1;
+            if (dp->fake_data.data) {
+                continue;
             }
-            break;
-            
-        case 'j':
-            fake_http.data = ftob(optarg, &fake_http.size);
-            if (!fake_http.data) {
+            dp->fake_data.data = ftob(optarg, &dp->fake_data.size);
+            if (!dp->fake_data.data) {
                 uniperror("read/parse");
                 invalid = 1;
             }
             break;
             
         case 'e':
+            if (oob_data.data != oob_char) {
+                continue;
+            }
             oob_data.data = ftob(optarg, &oob_data.size);
             if (!oob_data.data) {
                 uniperror("read/parse");
@@ -652,7 +807,11 @@ int main(int argc, char **argv)
         case 'W':
             params.wait_send = 0;
             break;
-            
+        #ifdef __linux__
+        case 'P':
+            params.protect_path = optarg;
+            break;
+        #endif
         case 0:
             break;
             
@@ -671,10 +830,16 @@ int main(int argc, char **argv)
         clear_params();
         return -1;
     }
-    s.in.sin_port = port;
-    b.in.sin_port = 0;
+    if (dp->hosts || dp->proto) {
+        dp = add((void *)&params.dp,
+            &params.dp_count, sizeof(struct desync_params));
+        if (!dp) {
+            clear_params();
+            return -1;
+        }
+    }
     
-    if (b.sa.sa_family != AF_INET6) {
+    if (params.baddr.sin6_family != AF_INET6) {
         params.ipv6 = 0;
     }
     if (!params.def_ttl) {
@@ -683,13 +848,13 @@ int main(int argc, char **argv)
             return -1;
         }
     }
-    params.mempool = mem_pool(MPOOL_INC);
+    params.mempool = mem_pool(0);
     if (!params.mempool) {
         uniperror("mem_pool");
         clear_params();
         return -1;
     }
-    int status = run(&s);
+    int status = run((struct sockaddr_ina *)&params.laddr);
     clear_params();
     return status;
 }
