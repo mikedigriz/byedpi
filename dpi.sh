@@ -25,5 +25,5 @@ function disable_proxy() {
 trap 'disable_proxy' SIGINT
 
 while true; do
-    /home/"$USER"/git/byedpi/ciadpi --disorder 3 --auto --split 1 --ip 127.0.0.1 --port 1080
+    /home/"$USER"/git/byedpi/ciadpi --hosts list.txt --disorder 3 --auto=none --split 1 --ip 127.0.0.1 --port 1080 
 done
