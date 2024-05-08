@@ -66,6 +66,7 @@ struct buffer {
 struct eval {
     int fd;    
     int index;
+    unsigned int mod_iter;
     enum eid type;
     struct eval *pair;
     struct buffer buff;
@@ -77,9 +78,6 @@ struct eval {
     ssize_t recv_count;
     int attempt;
     char cache;
-    #ifndef NOEPOLL
-    uint32_t events;
-    #endif
 };
 
 struct poolhd {
@@ -93,6 +91,7 @@ struct poolhd {
 #else
     struct pollfd *pevents;
 #endif
+    unsigned int iters;
 };
 
 struct poolhd *init_pool(int count);
@@ -107,4 +106,4 @@ void destroy_pool(struct poolhd *pool);
 
 struct eval *next_event(struct poolhd *pool, int *offs, int *type);
 
-int mod_etype(struct poolhd *pool, struct eval *val, int type, char rm);
+int mod_etype(struct poolhd *pool, struct eval *val, int type);

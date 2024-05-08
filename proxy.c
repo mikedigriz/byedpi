@@ -405,7 +405,7 @@ int udp_associate(struct poolhd *pool,
     
     int ufd = nb_socket(params.baddr.sin6_family, SOCK_DGRAM);
     if (ufd < 0) {
-        perror("socket");  
+        uniperror("socket");  
         return -1;
     }
     if (params.protect_path 
@@ -417,7 +417,7 @@ int udp_associate(struct poolhd *pool,
         int no = 0;
         if (setsockopt(ufd, IPPROTO_IPV6,
                 IPV6_V6ONLY, (char *)&no, sizeof(no))) {
-            perror("setsockopt IPV6_V6ONLY");
+            uniperror("setsockopt IPV6_V6ONLY");
             close(ufd);
             return -1;
         }
@@ -436,7 +436,7 @@ int udp_associate(struct poolhd *pool,
     
     int cfd = nb_socket(addr.sa.sa_family, SOCK_DGRAM);
     if (cfd < 0) {
-        perror("socket");
+        uniperror("socket");
         del_event(pool, pair);
         return -1;
     }
@@ -463,7 +463,7 @@ int udp_associate(struct poolhd *pool,
     
     socklen_t sz = sizeof(addr);
     if (getsockname(cfd, &addr.sa, &sz)) {
-        perror("getsockname");
+        uniperror("getsockname");
         return -1;
     }
     struct s5_req s5r = { 
@@ -474,7 +474,11 @@ int udp_associate(struct poolhd *pool,
         return -1;
     }
     if (send(val->fd, (char *)&s5r, len, 0) < 0) {
-        perror("send");
+        uniperror("send");
+        return -1;
+    }
+    if (mod_etype(pool, val, 0)) {
+        uniperror("mod_etype");
         return -1;
     }
     return 0;
@@ -520,7 +524,7 @@ static inline int on_accept(struct poolhd *pool, struct eval *val)
             close(c);
             continue;
         }
-        if (!(rval = add_event(pool, EV_REQUEST, c, 0))) {
+        if (!(rval = add_event(pool, EV_REQUEST, c, POLLIN))) {
             close(c);
             continue;
         }
@@ -556,8 +560,8 @@ int on_tunnel(struct poolhd *pool, struct eval *val,
         val->buff.data = 0;
         val->buff.size = 0;
         
-        if (mod_etype(pool, val, POLLIN, 1) ||
-                mod_etype(pool, pair, POLLOUT, 0)) {
+        if (mod_etype(pool, val, POLLIN) ||
+                mod_etype(pool, pair, POLLIN)) {
             uniperror("mod_etype");
             return -1;
         }
@@ -590,8 +594,8 @@ int on_tunnel(struct poolhd *pool, struct eval *val,
             }
             memcpy(val->buff.data, buffer + sn, val->buff.size);
             
-            if (mod_etype(pool, val, POLLIN, 0) ||
-                    mod_etype(pool, pair, POLLOUT, 1)) {
+            if (mod_etype(pool, val, 0) ||
+                    mod_etype(pool, pair, POLLOUT)) {
                 uniperror("mod_etype");
                 return -1;
             }
@@ -620,7 +624,7 @@ int on_udp_tunnel(struct eval *val, char *buffer, size_t bfsize)
         if (n < 1) {
             if (n && errno == EAGAIN)
                 break;
-            perror("recv udp");
+            uniperror("recv udp");
             return -1;
         }
         ssize_t ns;
@@ -661,7 +665,7 @@ int on_udp_tunnel(struct eval *val, char *buffer, size_t bfsize)
             ns = send(val->pair->pair->fd, data - offs, offs + n, 0);
         }
         if (ns < 0) {
-            perror("sendto");
+            uniperror("sendto");
             return -1;
         }
     } while(1);
@@ -716,7 +720,7 @@ static inline int on_request(struct poolhd *pool, struct eval *val,
         }
         if (s5e < 0) {
             if (resp_s5_error(val->fd, -s5e) < 0)
-                perror("send");
+                uniperror("send");
             return -1;
         }
     }
@@ -726,7 +730,7 @@ static inline int on_request(struct poolhd *pool, struct eval *val,
         error = s4_get_addr(buffer, n, &dst);
         if (error) {
             if (resp_error(val->fd, error, FLAG_S4) < 0)
-                perror("send");
+                uniperror("send");
             return -1;
         }
         error = connect_hook(pool, val, &dst, EV_CONNECT);
@@ -757,7 +761,7 @@ static inline int on_connect(struct poolhd *pool, struct eval *val, int e)
         }
     }
     else {
-        if (mod_etype(pool, val, POLLOUT, 0)) {
+        if (mod_etype(pool, val, POLLIN)) {
             uniperror("mod_etype");
             return -1;
         }
@@ -783,7 +787,7 @@ int event_loop(int srvfd)
         close(srvfd);
         return -1;
     }
-    if (!add_event(pool, EV_ACCEPT, srvfd, 0)) {
+    if (!add_event(pool, EV_ACCEPT, srvfd, POLLIN)) {
         uniperror("add event");
         destroy_pool(pool);
         close(srvfd);
@@ -807,11 +811,8 @@ int event_loop(int srvfd)
             uniperror("(e)poll");
             break;
         }
-        LOG(LOG_L, "new event: fd: %d, evt: %s\n", val->fd, eid_name[val->type]);
-            
-        if (!val->fd) {
-            continue;
-        }
+        LOG(LOG_L, "new event: fd: %d, evt: %s, mod_iter: %d\n", val->fd, eid_name[val->type], val->mod_iter);
+        
         switch (val->type) {
             case EV_ACCEPT:
                 if ((etype & POLLHUP) ||
