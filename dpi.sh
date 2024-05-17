@@ -6,6 +6,8 @@
 # Иметь скомпилированный бинарник по пути /home/"$USER"/git/byedpi/ciadpi
 # Открыть терминал и запустить dpi. Для завершения нажать ctrl + c
 
+# Если в браузере перестало работать - отключи плагины с впн (Browsec VPN)
+
 echo byedpi запущен
 echo прокси ВКЛ
 gsettings set org.gnome.system.proxy mode manual
