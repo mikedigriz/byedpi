@@ -1,10 +1,10 @@
 #!/bin/bash
 
-# Включение и выключение byedpi для curl и wget подобных, поддерживающих переменные
-# Сохранить в /usr/local/bin/dpi или ln -s /home/$USER/git/byedpi/dpi.sh /usr/local/bin/dpi
+# Включение и выключение byedpi для curl и wget подобных, поддерживающих переменные 
 
 # Иметь скомпилированный бинарник по пути /home/"$USER"/git/byedpi/ciadpi
-# Открыть терминал и запустить dpi. Для завершения нажать ctrl + c
+# chmod +x dpi-for-console.sh ;  ./dpi-for-console.sh
+# Для завершения нажать ctrl + c
 
 
 echo byedpi запущен
