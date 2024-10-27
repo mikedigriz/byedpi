@@ -1,12 +1,12 @@
-#define _GNU_SOURCE
+#include "packets.h"
 
-#include <packets.h>
 #include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <stdbool.h>
 #include <string.h>
+#include <strings.h>
 
 #ifdef _WIN32
     #include <winsock2.h>
@@ -15,8 +15,12 @@
 #endif
 
 #define ANTOHS(data, i) \
-    (uint16_t)((data[i] << 8) + (uint8_t)data[i + 1])
+    (((uint16_t)data[i] << 8) + (uint8_t)data[i + 1])
     
+#define SHTONA(data, i, x) \
+    data[i] = (uint8_t)((x) >> 8); \
+    data[i + 1] = ((x) & 0xff)
+
 
 char tls_data[517] = {
     "\x16\x03\x01\x02\x00\x01\x00\x01\xfc\x03\x03\x03\x5f"
@@ -52,6 +56,8 @@ char http_data[43] = {
     "GET / HTTP/1.1\r\n"
     "Host: www.wikipedia.org\r\n\r\n"
 };
+
+char udp_data[64] = { 0 };
 
 
 char *strncasestr(char *a, size_t as, char *b, size_t bs)
@@ -135,10 +141,10 @@ int change_tls_sni(const char *host, char *buffer, size_t bsize)
             || free_sz < diff) {
         return -1;
     }
-    *(uint16_t *)(sni + 2) = htons(old_sz + diff + 5);
-    *(uint16_t *)(sni + 4) = htons(old_sz + diff + 3);
-    *(uint16_t *)(sni + 7) = htons(old_sz + diff);
-    *(uint16_t *)(pad + 2) = htons(free_sz - diff);
+    SHTONA(sni, 2, old_sz + diff + 5);
+    SHTONA(sni, 4, old_sz + diff + 3);
+    SHTONA(sni, 7, old_sz + diff);
+    SHTONA(pad, 2, free_sz - diff);
     
     char *host_end = sni + 9 + old_sz;
     int oth_sz = bsize - (sni_offs + 9 + old_sz);
@@ -209,16 +215,16 @@ int parse_http(char *buffer, size_t bsize, char **hs, uint16_t *port)
     }
     host += 6;
     
-    while ((buff_end - host) > 0 && isblank(*host)) {
+    while ((buff_end - host) > 0 && isblank((unsigned char) *host)) {
         host++;
     }
     char *l_end = memchr(host, '\n', buff_end - host);
     if (!l_end) {
         return 0;
     }
-    for (; isspace(*(l_end - 1)); l_end--) {}
+    for (; isspace((unsigned char) *(l_end - 1)); l_end--) {}
     
-    if (!(isdigit(*(l_end - 1))))
+    if (!(isdigit((unsigned char) *(l_end - 1))))
         h_end = 0;
     else {
         char *h = host;
@@ -259,7 +265,7 @@ int get_http_code(char *b, size_t n)
     }
     char *e;
     long num = strtol(b + 9, &e, 10);
-    if (num < 100 || num > 511 || !isspace(*e)) {
+    if (num < 100 || num > 511 || !isspace((unsigned char) *e)) {
         return 0;
     }
     return (int )num;
@@ -291,7 +297,7 @@ bool is_http_redirect(char *req, size_t qn, char *resp, size_t sn)
     if (!l_end) {
         return 0;
     }
-    for (; isspace(*(l_end - 1)); l_end--) {}
+    for (; isspace((unsigned char) *(l_end - 1)); l_end--) {}
     
     if ((l_end - location) > 7) {
         if (!strncmp(location, "http://", 7)) {
@@ -345,9 +351,11 @@ bool neq_tls_sid(char *req, size_t qn, char *resp, size_t sn)
 }
 
 
-bool is_tls_alert(char *resp, size_t sn) {
-    return (sn >= 7 
-        && !memcmp(resp, "\x15\x03\x01\x00\x02\x02", 6));
+bool is_tls_shello(char *buffer, size_t bsize)
+{
+    return (bsize > 5 &&
+        ANTOHS(buffer, 0) == 0x1603 &&
+        buffer[5] == 0x02);
 }
 
 /*
@@ -360,7 +368,7 @@ bool is_dns_req(char *buffer, size_t n)
 }
 
 
-bool is_quic_inital(char *buffer, size_t bsize)
+bool is_quic_initial(char *buffer, size_t bsize)
 {
     return (bsize > 64 && (buffer[0] & 0xc0) == 0xc0);
 }
@@ -375,17 +383,17 @@ int mod_http(char *buffer, size_t bsize, int m)
     for (par = host - 1; *par != ':'; par--) {}
     par -= 4;
     if (m & MH_HMIX) {
-        par[0] = tolower(par[0]);
-        par[1] = toupper(par[1]);
-        par[3] = toupper(par[3]);
+        par[0] = tolower((unsigned char) par[0]);
+        par[1] = toupper((unsigned char) par[1]);
+        par[3] = toupper((unsigned char) par[3]);
     }
     if (m & MH_DMIX) {
         for (int i = 0; i < hlen; i += 2) {
-            host[i] = toupper(host[i]);
+            host[i] = toupper((unsigned char)host[i]);
         }
     }
     if (m & MH_SPACE) {
-        for (; !isspace(*(host + hlen)); hlen++) {}
+        for (; !isspace((unsigned char) *(host + hlen)); hlen++) {}
         int sc = host - (par + 5);
         memmove(par + 5, host, hlen);
         memset(par + 5 + hlen, '\t', sc);
@@ -407,7 +415,7 @@ int part_tls(char *buffer, size_t bsize, ssize_t n, long pos)
     memmove(buffer + 5 + pos + 5, buffer + 5 + pos, n - (5 + pos));
     memcpy(buffer + 5 + pos, buffer, 3);
     
-    *(uint16_t *)(buffer + 3) = htons(pos);
-    *(uint16_t *)(buffer + 5 + pos + 3) = htons(r_sz - pos);
+    SHTONA(buffer, 3, pos);
+    SHTONA(buffer, 5 + pos + 3, r_sz - pos);
     return 5;
 }

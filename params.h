@@ -1,31 +1,46 @@
+#ifndef PARAMS_H
+#define PARAMS_H
+
+#include <stdint.h>
 #include <stdio.h>
+#include <stdbool.h>
+
 #include "mpool.h"
 
 #ifdef _WIN32
     #include <ws2tcpip.h>
 #else
     #include <arpa/inet.h>
+    #include <netinet/in.h>
+    #include <unistd.h>
+    #include <sys/socket.h>
 #endif
 
 #if defined(__linux__) || defined(_WIN32)
 #define FAKE_SUPPORT 1
 #define TIMEOUT_SUPPORT 1
 #endif
-    
-#define OFFSET_SNI 1
-#define OFFSET_HOST 2
+
+#define OFFSET_END 1
+#define OFFSET_MID 2
+#define OFFSET_RAND 4
+#define OFFSET_SNI 8
+#define OFFSET_HOST 16
+#define OFFSET_START 32
 
 #define DETECT_HTTP_LOCAT 1
-#define DETECT_HTTP_CLERR 2
-#define DETECT_TLS_INVSID 4
-#define DETECT_TLS_ALERT 8
-#define DETECT_TORST 16
+#define DETECT_TLS_ERR 2
+#define DETECT_TORST 8
+
+#define AUTO_NOBUFF -1
+#define AUTO_NOSAVE 0
 
 enum demode {
     DESYNC_NONE,
     DESYNC_SPLIT,
     DESYNC_DISORDER,
     DESYNC_OOB,
+    DESYNC_DISOOB,
     DESYNC_FAKE
 };
 
@@ -35,6 +50,7 @@ char *demode_str[] = {
     "DESYNC_SPLIT",
     "DESYNC_DISORDER",
     "DESYNC_OOB",
+    "DESYNC_DISOOB",
     "DESYNC_FAKE"
 };
 #endif
@@ -43,6 +59,7 @@ struct part {
     int m;
     int flag;
     long pos;
+    int r, s;
 };
 
 struct packet {
@@ -54,8 +71,12 @@ struct desync_params {
     int ttl;
     char *ip_options;
     ssize_t ip_options_len;
-    char md5sig;
+    bool md5sig;
     struct packet fake_data;
+    int udp_fake_count;
+    int fake_offset;
+    bool drop_sack;
+    char oob_char[2];
     
     int parts_n;
     struct part *parts;
@@ -67,34 +88,34 @@ struct desync_params {
     int proto;
     int detect;
     struct mphdr *hosts;
+    uint16_t pf[2];
+    int rounds[2];
     
     char *file_ptr;
     ssize_t file_size;
-    
-    char to_ip;
-    struct sockaddr_in6 addr;
 };
 
 struct params {
     int dp_count;
     struct desync_params *dp;
     long sfdelay;
-    char wait_send;
+    bool wait_send;
     int def_ttl;
-    char custom_ttl;
+    bool custom_ttl;
     
-    char late_conn;
-    char tfo;
+    bool tfo;
     unsigned int timeout;
+    int auto_level;
     long cache_ttl;
-    char ipv6;
-    char resolve;
-    char udp;
+    bool ipv6;
+    bool resolve;
+    bool udp;
     int max_open;
     int debug;
     size_t bfsize;
     struct sockaddr_in6 baddr;
     struct sockaddr_in6 laddr;
+    bool transparent;
     struct mphdr *mempool;
     
     char *protect_path;
@@ -104,6 +125,7 @@ extern struct params params;
 
 extern struct packet fake_tls;
 extern struct packet fake_http;
-extern struct packet oob_data;
+extern struct packet fake_udp;
 
 extern char ip_option[1];
+#endif

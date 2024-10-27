@@ -1,22 +1,23 @@
-#define CONEV_H
 #include "conev.h"
 
 #include <stdlib.h>
 #include <string.h>
 #include <limits.h>
 #include <assert.h>
+#include "error.h"
 
 
 struct poolhd *init_pool(int count)
 {
     struct poolhd *pool = calloc(sizeof(struct poolhd), 1);
     if (!pool) {
+        uniperror("init pool");
         return 0;
     }
     pool->max = count;
     pool->count = 0;
     pool->iters = 0;
-    
+
     #ifndef NOEPOLL
     int efd = epoll_create(count);
     if (efd < 0) {
@@ -28,8 +29,9 @@ struct poolhd *init_pool(int count)
     pool->pevents = malloc(sizeof(*pool->pevents) * count);
     pool->links = malloc(sizeof(*pool->links) * count);
     pool->items = malloc(sizeof(*pool->items) * count);
-    
+
     if (!pool->pevents || !pool->links || !pool->items) {
+        uniperror("init pool");
         destroy_pool(pool);
         return 0;
     }
@@ -46,19 +48,21 @@ struct eval *add_event(struct poolhd *pool, enum eid type,
 {
     assert(fd > 0);
     if (pool->count >= pool->max) {
+        LOG(LOG_E, "add_event: pool is full\n");
         return 0;
     }
     struct eval *val = pool->links[pool->count];
     memset(val, 0, sizeof(*val));
-    
+
     val->mod_iter = pool->iters;
     val->fd = fd;
     val->index = pool->count;
     val->type = type;
-    
+
     #ifndef NOEPOLL
     struct epoll_event ev = { .events = EPOLLRDHUP | e, .data = {val} };
     if (epoll_ctl(pool->efd, EPOLL_CTL_ADD, fd, &ev)) {
+        uniperror("add event");
         return 0;
     }
     #else
@@ -68,7 +72,7 @@ struct eval *add_event(struct poolhd *pool, enum eid type,
     pfd->events = POLLRDHUP | e;
     pfd->revents = 0;
     #endif
-    
+
     pool->count++;
     return val;
 }
@@ -82,6 +86,8 @@ void del_event(struct poolhd *pool, struct eval *val)
     }
     #ifdef NOEPOLL
     assert(val->fd == pool->pevents[val->index].fd);
+    #else
+    epoll_ctl(pool->efd, EPOLL_CTL_DEL, val->fd, 0);
     #endif
     if (val->buff.data) {
         assert(val->buff.size);
@@ -146,14 +152,11 @@ struct eval *next_event(struct poolhd *pool, int *offs, int *type)
 {
     while (1) {
         int i = *offs;
-        assert(i >= -1 && i < pool->count);
+        assert(i >= -1 && i < pool->max);
         if (i < 0) {
             i = (epoll_wait(pool->efd, pool->pevents, pool->max, -1) - 1);
             if (i < 0) {
                 return 0;
-            }
-            if (pool->iters == UINT_MAX) {
-                pool->iters = 0;
             }
             pool->iters++;
         }
@@ -187,9 +190,6 @@ struct eval *next_event(struct poolhd *pool, int *offs, int *typel)
                 return 0;
             }
             i = pool->count - 1;
-            if (pool->iters == UINT_MAX) {
-                pool->iters = 0;
-            }
             pool->iters++;
         }
         short type = pool->pevents[i].revents;

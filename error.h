@@ -1,3 +1,6 @@
+#ifndef CIADPI_ERROR_H
+#define CIADPI_ERROR_H
+
 #include <stdio.h>
 #include <errno.h>
 
@@ -7,6 +10,8 @@
 #ifdef ANDROID_APP
     #include <android/log.h>
 #endif
+
+#include "params.h"
 
 #ifdef _WIN32
 #define get_e() \
@@ -18,7 +23,7 @@
 
 #ifdef _WIN32
     #define uniperror(str) \
-        fprintf(stderr, "%s: %d\n", str, GetLastError())
+        fprintf(stderr, "%s: %ld\n", str, GetLastError())
 #else
     #ifdef ANDROID_APP
     #define uniperror(str) \
@@ -64,4 +69,15 @@ static inline const int unie(int e)
     #define LOG(s, str, ...) \
         if (params.debug >= s) \
             fprintf(stderr, str, ##__VA_ARGS__)
+#endif
+
+#define INIT_ADDR_STR(dst) \
+    char ADDR_STR[INET6_ADDRSTRLEN]; \
+    const char *p = 0; \
+    if (dst.sa.sa_family == AF_INET) \
+        p = inet_ntop(AF_INET, &dst.in.sin_addr, ADDR_STR, sizeof(ADDR_STR)); \
+    else \
+        p = inet_ntop(AF_INET6, &dst.in6.sin6_addr, ADDR_STR, sizeof(ADDR_STR)); \
+    if (!p) uniperror("inet_ntop");
+
 #endif
